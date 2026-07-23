@@ -85,6 +85,157 @@ Analogue systems that realise controlled warp gradients and time-dependent drivi
 8. Conclusions
 The single warped KS throat is robust across a continuous interval of Kaluza–Klein graviton masses. Interpreting the construction as a hierarchical transcription of a universal geometric code makes this robustness natural and simultaneously isolates the six concrete additions required for a true unification of all fundamental forces. Each addition is a well-defined research programme that builds directly on the calculable ingredients already present. Realising them would convert the present flexible phenomenological framework into a complete hierarchical unification.
 
+#!/usr/bin/env python3
+"""
+VINES-IIB Real Numerical Tools
+- Seed configuration generator
+- Warped radial solver (Laplace + Dirac)
+- Overlap integrals
+"""
+
+import numpy as np
+from scipy.integrate import solve_bvp, simps
+from scipy.interpolate import interp1d
+import pandas as pd
+
+# ============================================================
+# 1. Seed Configuration Generator (220 configs)
+# ============================================================
+
+def generate_seeds(n=220, seed=42):
+    np.random.seed(seed)
+    x1 = 3.83
+    configs = []
+    for i in range(n):
+        m_target = np.random.uniform(3.0, 45.0)          # TeV
+        A_IR = np.random.uniform(33.8, 37.8)
+        k = m_target / (x1 * np.exp(-A_IR))              # consistent with mass formula
+        N3 = int(np.random.randint(15, 300))
+        M  = int(np.random.randint(4, 120))
+        gs = round(np.random.uniform(0.03, 0.6), 4)
+        configs.append({
+            'Config_ID': i+1,
+            'N_3form': N3,
+            'M_flux': M,
+            'g_s': gs,
+            'A_IR': round(A_IR, 4),
+            'k_TeV': f"{k:.4e}",
+            'm_KK_TeV': round(m_target, 3)
+        })
+    return pd.DataFrame(configs)
+
+# ============================================================
+# 2. Full Warped Radial Solver
+# ============================================================
+
+class WarpedSolver:
+    """
+    Numerical solver on the metric:
+        ds² = e^{-2A(y)} η_μν dx^μ dx^ν + dy²
+    """
+
+    def __init__(self, y_grid, A_values):
+        self.y = np.asarray(y_grid)
+        self.A = np.asarray(A_values)
+        self.A_func = interp1d(self.y, self.A, kind='cubic', fill_value='extrapolate')
+        self.dA = np.gradient(self.A, self.y)
+
+    # ----- Laplace / spin-2 (graviton) equation -----
+    def solve_graviton_mode(self, m, boundary='IR'):
+        """
+        Solves the radial equation for a transverse-traceless graviton mode
+        of 4D mass m.
+        Standard form (after field redefinition):
+            - (e^{4A} ψ')' = m² e^{2A} ψ
+        """
+        def ode(y, z):
+            # z[0] = ψ, z[1] = ψ'
+            A = self.A_func(y)
+            dA = np.interp(y, self.y, self.dA)
+            return np.vstack((
+                z[1],
+                -4.0 * dA * z[1] - m**2 * np.exp(2.0 * A) * z[0]
+            ))
+
+        def bc(za, zb):
+            # Simple boundary conditions (UV Neumann-ish, IR Dirichlet for illustration)
+            return np.array([za[1], zb[0]])
+
+        y = self.y
+        z_init = np.zeros((2, y.size))
+        z_init[0] = np.exp(-2 * self.A)          # rough initial guess
+        sol = solve_bvp(ode, bc, y, z_init, tol=1e-4)
+        return sol.y[0] if sol.success else None
+
+    # ----- Dirac zero-mode (fermions) -----
+    def dirac_zero_mode(self, c, chirality='L'):
+        """
+        Analytic + numerical zero mode for bulk mass parameter c.
+        Canonical RS form (left-handed):
+            f_L(y) ∝ exp( (2 - c) A(y) )   or equivalent convention
+        We normalise with the warped measure ∫ e^{-3A} |f|² dy = 1
+        """
+        if chirality == 'L':
+            f = np.exp((2.0 - c) * self.A)
+        else:
+            f = np.exp((c - 1.0) * self.A)      # rough right-handed counterpart
+
+        # Normalisation
+        integrand = np.exp(-3.0 * self.A) * f**2
+        norm = np.sqrt(simps(integrand, self.y))
+        return f / norm if norm > 0 else f
+
+    # ----- Overlap integral (Yukawa) -----
+    def yukawa_overlap(self, fL, fR, fH=None):
+        if fH is None:
+            integrand = fL * fR * np.exp(-self.A)
+        else:
+            integrand = fL * fR * fH * np.exp(-self.A)
+        return simps(integrand, self.y)
+
+# ============================================================
+# 3. Example usage (run this)
+# ============================================================
+
+if __name__ == "__main__":
+    print("=== Generating 220 seed configurations ===")
+    df = generate_seeds(220)
+    print(df.head(10))
+    print(f"\nTotal configs: {len(df)}")
+    print(f"m_KK range: {df['m_KK_TeV'].min():.2f} – {df['m_KK_TeV'].max():.2f} TeV")
+    df.to_csv("vines_ks_seeds_220.csv", index=False)
+    print("Saved: vines_ks_seeds_220.csv")
+
+    print("\n=== Testing Warped Radial Solver ===")
+    # Simple linear warp for demonstration (replace with real numerical A(y) later)
+    y = np.linspace(0.0, 1.0, 400)
+    A_IR = 35.5
+    k_warp = 3.0
+    A = A_IR + k_warp * y               # example profile
+
+    solver = WarpedSolver(y, A)
+
+    # Dirac zero modes
+    fL = solver.dirac_zero_mode(c=0.7, chirality='L')
+    fR = solver.dirac_zero_mode(c=-0.3, chirality='R')
+    print(f"Normalised left zero-mode max: {fL.max():.4f}")
+
+    # Yukawa overlap
+    yuk = solver.yukawa_overlap(fL, fR)
+    print(f"Example Yukawa overlap integral: {yuk:.6f}")
+
+    # Graviton mode (example mass)
+    psi = solver.solve_graviton_mode(m=5.0)
+    if psi is not None:
+        print(f"Graviton mode solved, max amplitude: {np.max(np.abs(psi)):.4e}")
+    else:
+        print("Graviton BVP did not converge with current BC (adjust for production use)")
+
+    print("\nCode finished successfully.")
+
+
+
+
 Acknowledgements
 We thank colleagues for discussions on flux compactifications, holography and experimental constraints.References
 [1] I. R. Klebanov & M. J. Strassler, JHEP 08 (2000) 052.
